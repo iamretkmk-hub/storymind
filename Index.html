@@ -8573,26 +8573,132 @@ function relProfile(o){
 }
 
 /* ---- PAYLOAD PROSE (no numerals) ----
-   The roleplay model must never see raw axis numbers (your spec). These turn the stored values
-   into plain-English intensity words so the payload reads as a feeling, not a stat sheet. */
+   The roleplay model must never see raw axis numbers (your spec). These turn the stored values into
+   FELT, behaviour-steering prose. The old version stitched a bare "intensity + axis-label" tag per
+   axis ("faintly fear/tension; faintly terror (intimidated / endangered); faintly provoked & angry")
+   — it read like a stat sheet and barely moved the model. Now each axis maps to an evocative clause
+   that names the feeling AND the pull it creates (a body cue or an urge to act), because THAT is
+   what actually shapes how the roleplay model writes the next line. */
 function _intensity(v){ const a=Math.abs(v); if(a<10)return ""; if(a<25)return "faintly"; if(a<45)return "clearly"; if(a<70)return "strongly"; return "overwhelmingly"; }
-function _axisPhrase(o,key){
-  const v=o[key]||0; if(Math.abs(v)<10)return null;
-  const d=REL_DIMS.find(x=>x.key===key); if(!d)return null;
-  return `${_intensity(v)} ${v>0?d.pos:d.neg}`.trim();
-}
-// MOMENTARY (fast/state) facet — reads from o.st. Impulsive in-the-moment lean. Prose only.
+// Band index 0..3 (faint / clear / strong / overwhelming); -1 when too weak to voice (|v|<10).
+function _band(v){ const a=Math.abs(v); if(a<10)return -1; if(a<25)return 0; if(a<45)return 1; if(a<70)return 2; return 3; }
+/* Affective phrase banks — one evocative clause per axis, per direction, per intensity band. Each is
+   a self-contained sentence so several can simply be joined with a space and still read as prose.
+   SLOW = the settled, considered opinion (governs behaviour). FAST = the momentary in-body pull. */
+const REL_SLOW_PROSE={
+  trust:{pos:[
+    "You trust them a little — enough to lower your guard by a fraction.",
+    "You genuinely trust them, and you take them at their word.",
+    "You trust them deeply; you'd put real weight on what they say and lean on them without second-guessing.",
+    "You trust them utterly, without reservation — you'd stake almost anything on them."],
+    neg:[
+    "You're faintly wary of them, holding one small reservation back.",
+    "You distrust them, and you weigh their words before believing any of them.",
+    "You deeply distrust them; you assume there's an angle behind almost everything they do.",
+    "You trust nothing they say — every word from them lands as a probable lie."]},
+  affection:{pos:[
+    "You're mildly fond of them.",
+    "You genuinely care for them, and their wellbeing matters to you.",
+    "You love them, and it softens how you speak to them even when you'd rather it didn't.",
+    "You love them fiercely — they're among the few you'd put before yourself."],
+    neg:[
+    "You quietly dislike them.",
+    "You resent them, and it wears your patience thin.",
+    "You despise them, and plain courtesy toward them costs you real effort.",
+    "You hate them; it's hard to share a room without it bleeding through."]},
+  respect:{pos:[
+    "You hold a mild respect for them.",
+    "You respect them, and you weigh their judgement more than most people's.",
+    "You deeply admire them; their word carries real authority with you.",
+    "You hold them in something close to awe."],
+    neg:[
+    "You think a little less of them than you let on.",
+    "You look down on them, and it colours how seriously you take them.",
+    "You hold them in contempt, and struggle to credit anything they claim.",
+    "You utterly despise what they are; nothing they do earns your regard."]},
+  familiarity:{pos:[
+    "You know them a little.",
+    "You know them well — their habits and moods are familiar ground.",
+    "You know them intimately; you can read them almost before they speak.",
+    "You know them better than almost anyone alive."],
+    neg:[
+    "They're still fairly new to you.",
+    "They're largely a stranger; you're still learning who they are.",
+    "They're a near-total stranger to you.",
+    "You barely know them at all — almost everything about them is a blank."]},
+  jealousy:{pos:[
+    "A faint possessiveness stirs when others get close to them.",
+    "You feel possessive of them, and rivals prick at you.",
+    "You're sharply possessive — quick to mark anyone who might come between you.",
+    "You can't stand the thought of sharing them; the idea of a rival gnaws at you."],
+    neg:[
+    "You feel secure about them.",
+    "You're secure and generous where they're concerned, untroubled by rivals.",
+    "You're wholly unthreatened — glad, even, to see them close to others.",
+    "You feel complete security about them; the notion of rivalry doesn't touch you."]}
+};
+const REL_FAST_PROSE={
+  desire:{pos:[
+    "A quiet pull of attraction keeps catching at you.",
+    "A real, warming want for them tugs beneath your composure.",
+    "A strong, distracting hunger keeps dragging your attention to their nearness.",
+    "An overwhelming craving for them crowds out almost every other thought."],
+    neg:[
+    "A small flinch of distaste rises when they're near.",
+    "A clear recoil pushes you to put space between you.",
+    "A strong repulsion makes their closeness hard to bear.",
+    "An overwhelming revulsion turns your stomach when they come near."]},
+  comfort:{pos:[
+    "A slight ease loosens you in their company.",
+    "A settled comfort lets your guard drop around them.",
+    "A deep, unguarded ease spreads through you when they're close.",
+    "A complete, boneless safety with them softens everything in you."],
+    neg:[
+    "A faint wire of tension runs through you.",
+    "An uneasy, on-guard tightness keeps you braced.",
+    "A taut wariness holds you rigid, ready to move.",
+    "A cornered, rigid dread has you coiled to bolt."]},
+  fear:{pos:[
+    "A thin thread of fear tightens in you.",
+    "A real fear of them quickens your pulse.",
+    "A sharp, body-tightening fear makes you want to shrink back.",
+    "Outright terror floods you; every instinct is screaming to get clear."],
+    neg:[
+    "A faint sense of the upper hand steadies you.",
+    "A clear feeling of safety — of the stronger footing — settles you.",
+    "A commanding assurance fills you; they don't frighten you in the least.",
+    "A total, fearless command of the moment fills you."]},
+  agitation:{pos:[
+    "A low prickle of irritation itches under your calm.",
+    "A rising anger heats the back of your throat.",
+    "A hot, hard-to-hold anger pushes at the edge of your restraint.",
+    "Fury, barely contained, tightens your jaw and your fists."],
+    neg:[
+    "A slight steadiness holds you level.",
+    "A settled calm keeps your tone even.",
+    "A deep composure makes you hard to rattle.",
+    "A serene, immovable calm anchors you completely."]}
+};
+function _proseFor(bank,key,v){ const b=_band(v); if(b<0)return null; const e=bank[key]; if(!e)return null; const arr=v>0?e.pos:e.neg; return (arr&&arr[b])||null; }
+// MOMENTARY (fast/state) facet — reads from o.st. The impulsive in-the-moment pull, strongest first.
 function relMomentaryProse(o){
   if(!o||!o.st)return "";
-  const parts=REL_FAST.map(k=>{ const v=o.st[k]||0; if(Math.abs(v)<10)return null;
-    const d=REL_DIMS.find(x=>x.key===k); return `${_intensity(v)} ${v>0?d.pos:d.neg}`.trim(); }).filter(Boolean);
-  return parts.length?parts.join("; "):"";
+  let items=REL_FAST.map(k=>({k,v:o.st[k]||0})).filter(x=>Math.abs(x.v)>=10);
+  // fear(+) and comfort(−) are the same dread reported on two axes — keep only the sharper voice so
+  // the line doesn't read "fear/tension; terror" (the redundancy that made the old output robotic).
+  if(items.some(x=>x.k==="fear"&&x.v>0)) items=items.filter(x=>!(x.k==="comfort"&&x.v<0));
+  if(items.some(x=>x.k==="comfort"&&x.v>0)) items=items.filter(x=>!(x.k==="fear"&&x.v<0));
+  items.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+  const parts=items.slice(0,3).map(x=>_proseFor(REL_FAST_PROSE,x.k,x.v)).filter(Boolean);
+  return parts.join(" ");
 }
-// CONSIDERED (slow/trait) facet — reads the stable axes. The filtered, lasting opinion. Prose only.
+// CONSIDERED (slow/trait) facet — the filtered, lasting opinion, strongest axes first.
 function relConsideredProse(o){
   if(!o)return "";
-  const parts=REL_SLOW.map(k=>_axisPhrase(o,k)).filter(Boolean);
-  return parts.length?parts.join("; "):"";
+  let items=REL_SLOW.map(k=>({k,v:o[k]||0})).filter(x=>Math.abs(x.v)>=10);
+  items.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+  const parts=items.slice(0,4).map(x=>_proseFor(REL_SLOW_PROSE,x.k,x.v)).filter(Boolean);
+  return parts.join(" ");
 }
 // True if a recent fast spike is NOT supported by the slow axes — the model may show a small
 // misstep now and quiet regret/shame after (your note: regret follows ANY over-strong impulse).
@@ -12138,8 +12244,8 @@ Structure EVERY reply as exactly TWO blocks, in this order, never mixed:
   // --- tail: feelings ---
   feel_header:`# HOW YOU FEEL TOWARD {{target_up}}\nThese are your private feelings — let them shape how you speak and act, but never state them outright.`,
   feel_lasting:`LASTING / CONSIDERED VIEW (your settled, filtered opinion — this is the real foundation and should govern your behaviour): {{desc}}`,
-  feel_lasting_alt:`LASTING / CONSIDERED VIEW (your settled, filtered opinion — governs your behaviour): you {{considered}}.`,
-  feel_momentary:`RIGHT-NOW FEELING (a momentary, impulsive pull from this scene — it colors your tone and may tempt a small slip, but it must NOT override the lasting view above or push you out of character): you are {{momentary}} in this moment.`,
+  feel_lasting_alt:`LASTING / CONSIDERED VIEW — your settled, filtered opinion of them; this is the real foundation and should govern how you treat them:\n{{considered}}`,
+  feel_momentary:`RIGHT-NOW FEELING — a momentary, impulsive pull rising in you this scene. Let it live in your body language, your tone, and what you're tempted to do this beat; it may tempt a small slip, but it must NOT override the considered view above or push you out of character:\n{{momentary}}`,
   feel_tension_desire:`This heat isn't backed by deeper feeling — act on it and you'd likely feel a flush of regret or self-consciousness after.`,
   feel_tension_anger:`You're more provoked than the situation truly warrants — a sharp word may escape, and you might quietly regret the overreaction.`,
   feel_tension_fear:`The flash of fear sits oddly against how much you actually trust them — it may make you flinch or overreact, then feel foolish.`,
