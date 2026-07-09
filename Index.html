@@ -11920,7 +11920,7 @@ function buildPayload(layoutKey, headBlocks, tailBlocks){
     player:["player_intro","player_bg","player_look"],
     ooc:["ooc"],multi_format:["multi_format"],
     situation:["situation_leaving","situation_arriving"],
-    scene_now:["scene_header","scene_loc","scene_loc_sub","scene_subareas","scene_privacy","scene_present","scene_alone","scene_apart"],
+    scene_now:["scene_header","scene_loc","scene_loc_sub","scene_subareas","scene_privacy","scene_present","scene_alone","scene_apart","scene_changed_header","scene_changed_loc","scene_changed_day","scene_changed_period","scene_changed_arrived","scene_changed_left"],
     private_intent:["intent_warm","intent_hostile"],
     recent_memories:["mem_recent_header"],distant_memories:["mem_distant_header"],
     response_guidance:["guidance_open","guidance_target","guidance_close","guidance_reply"],
@@ -12116,6 +12116,14 @@ Structure EVERY reply as exactly TWO blocks, in this order, never mixed:
   // v19.71 — shown INSTEAD of scene_present/scene_alone when the VIEWER is in a different sub-area
   // than everyone else (e.g. a fresh arrival standing at the entrance).
   scene_apart:`You are at {{sub}}, apart from the others. You cannot see or hear what happens in the other areas — you only know what you could perceive from here.`,
+  // --- tail: transition awareness (v22) — a blunt call-out of what changed since your last reply.
+  // Emitted at the TOP of SCENE RIGHT NOW only when something actually just changed; otherwise absent.
+  scene_changed_header:`⚠️ WHAT JUST CHANGED (this happened moments ago — react to it before anything else, and stay consistent with it):`,
+  scene_changed_loc:`You have just MOVED. You are now at {{loc}} — a moment ago you were at {{prev}}. Speak and act as someone who has only just arrived here: take in the new surroundings, and do NOT continue as if you were still at {{prev}}.`,
+  scene_changed_day:`Time has just JUMPED forward — it is now Day {{day}}, {{period}} ({{gap}}). Don't pick up mid-conversation as if no time passed; let the change of day and time show in what you say and do.`,
+  scene_changed_period:`Time has just moved on — it is now {{period}} (it was {{prev}} a moment ago). Let the new time of day register; don't act as though it were still {{prev}}.`,
+  scene_changed_arrived:`Just ARRIVED, now here with you: {{names}}. They were NOT here a moment ago — notice them and react; do not treat them as if they'd been present all along.`,
+  scene_changed_left:`Just LEFT the scene: {{names}}. They are gone now — do not speak to them, answer them, or act as if they can still hear you.`,
   // --- tail: private intent ---
   intent_warm:`# A PRIVATE FEELING (this turn)\nYou privately hold a growing warmth toward {{target}}, who is here now (a {{kind}} — {{aim}}). You are NOT declaring it. But let it quietly tint how you treat {{target}} this turn — a touch more attentive, a softer edge, a small kindness — without announcing it or breaking character.`,
   intent_hostile:`# A PRIVATE TENSION (this turn)\nYou privately hold a {{kind}} toward {{target}}, who is here now ({{aim}}). You are NOT revealing it openly. But let it edge how you treat {{target}} this turn — a cooler tone, a guarded distance, a barbed remark held just beneath courtesy — without exposing the scheme or breaking character.`,
@@ -12363,6 +12371,55 @@ function _recentVoiceMarkup(chat){
     return rec.some(m=>/"[^"\n]*\[[^\]\n]{2,28}\][^"\n]*"/.test(m.content) || /^\s*\*[^*\n][^*]*\*\s*\n+\s*"/.test(m.content));
   }catch(e){ return false; }
 }
+/* v22 — TRANSITION AWARENESS. Characters slip right after the scene shifts: they keep talking as
+   if still at the old place, ignore who just walked in or out, or miss that time jumped. Every
+   generated reply is stamped (stampStatus) with the day/period/location it happened in, so the LAST
+   reply's stamp is exactly "where the character last took stock". Comparing the CURRENT scene to
+   that stamp tells us what changed since; any presence notes dropped AFTER that reply are the
+   arrivals/exits the character hasn't acknowledged yet. We surface those deltas as a blunt,
+   present-tense call-out placed at the very top of the tail SCENE RIGHT NOW block — closest to
+   generation, where compliance is highest. Returns "" when nothing changed since the last reply, so
+   a steady scene is never nagged. Location moves are announced as a move (not as everyone
+   "arriving", which SCENE RIGHT NOW already covers), so arrivals are suppressed on a move. */
+function sceneChangeNotice(chat,selfId){
+  try{
+    if(!chat||!Array.isArray(chat.messages)||!chat.messages.length)return "";
+    // Baseline = the most recent real character reply (only those carry a .status stamp).
+    let bi=-1, base=null;
+    for(let i=chat.messages.length-1;i>=0;i--){ const m=chat.messages[i]; if(m&&m.status){ bi=i; base=m.status; break; } }
+    if(!base)return "";   // opening scene — SCENE RIGHT NOW already establishes it; nothing to contrast.
+    const lines=[];
+    const curLoc=(chat.location||"").trim(), prevLoc=(base.location||"").trim();
+    const curDay=chat.gameDay||1, prevDay=base.day||1;
+    const curPer=chatPeriod(chat), prevPer=base.period||"";
+    const locChanged = !!(curLoc && prevLoc && curLoc!==prevLoc);
+    if(locChanged)lines.push(fillTpl(blkTpl("scene_changed_loc"),{loc:curLoc,prev:prevLoc}));
+    // Time: a day jump takes precedence over (and subsumes) a plain period change.
+    if(curDay>prevDay){
+      const d=curDay-prevDay, gap=d===1?"the next day":`${d} days later`;
+      lines.push(fillTpl(blkTpl("scene_changed_day"),{day:curDay,period:curPer,gap:gap}));
+    }else if(curPer && prevPer && curPer!==prevPer){
+      lines.push(fillTpl(blkTpl("scene_changed_period"),{period:curPer,prev:prevPer}));
+    }
+    // Presence: arrivals/exits recorded AFTER the last reply — i.e. not yet acknowledged. Someone
+    // who both left and returned (or vice-versa) in that span nets out.
+    const enter=new Set(), leave=new Set();
+    for(let i=bi+1;i<chat.messages.length;i++){ const m=chat.messages[i]; if(!m||!m.presenceNote)continue;
+      (m.enteredIds||[]).forEach(id=>enter.add(id));
+      (m.exitedIds||[]).forEach(id=>leave.add(id));
+    }
+    [...leave].forEach(id=>{ if(enter.has(id)){ enter.delete(id); leave.delete(id); } });
+    const nm=id=>{ if(id===selfId)return null; const c=resolveChar(id,chat); return (c&&c.name)?c.name:null; };
+    if(!locChanged){
+      const arr=[...enter].map(nm).filter(Boolean);
+      if(arr.length)lines.push(fillTpl(blkTpl("scene_changed_arrived"),{names:arr.join(", ")}));
+    }
+    const gone=[...leave].map(nm).filter(Boolean);
+    if(gone.length)lines.push(fillTpl(blkTpl("scene_changed_left"),{names:gone.join(", ")}));
+    if(!lines.length)return "";
+    return `${blkTpl("scene_changed_header")}\n`+lines.map(l=>`- ${l}`).join("\n");
+  }catch(e){ return ""; }
+}
 function buildTailBlocks(opts){
   const {chat,selfName,selfId,targetName,targetId,multi,injected}=opts||{};
   const B={};
@@ -12445,6 +12502,9 @@ function buildTailBlocks(opts){
       }
       else { sn+=`\n${fillTpl(blkTpl("scene_alone"),{target:(targetName||state.user)})}`; }
     }
+    // v22 — if the scene just shifted (place/time/who's here), lead the block with a blunt call-out
+    // of exactly what changed since this character last spoke, so they react to it instead of drifting.
+    {const chg=sceneChangeNotice(chat,selfId); if(chg)sn=`${chg}\n\n${sn}`;}
     B.scene_now=sn;
     // v19.2 — trackers & calendar are their OWN movable blocks now (previously appended inside
     // SCENE RIGHT NOW with a plain newline; as separate blocks they join with the standard
